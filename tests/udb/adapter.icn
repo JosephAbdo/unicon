@@ -8,17 +8,34 @@ procedure is_windows()
    return find("NT", &features)
 end
 
-procedure start_udb_process(args)
-   local cmd, p, pid
+procedure winlog(s)
+   local f
 
-   if is_windows() then
+   if is_windows() then {
+      f := open("adapter_windows.log", "a") | fail
+      write(f, s)
+      close(f)
+   }
+end
+
+procedure start_udb_process(mode, port)
+   local cmd, p, pid, args
+
+   if is_windows() then {
+      args := "'" || mode || "', '" || port || "'"
       cmd := "powershell -NoProfile -Command \"$p = Start-Process -WindowStyle Hidden -FilePath '" ||
-         udb_for_tests() || "' -ArgumentList '" || args || "' -PassThru; $p.Id\""
+         udb_for_tests() || "' -ArgumentList " || args || " -PassThru; $p.Id\""
+      winlog("start_udb_process cmd: " || cmd)
+   }
    else
-      cmd := udb_for_tests() || " " || args || " >/dev/null 2>&1 & echo $!"
+      cmd := udb_for_tests() || " " || mode || " " || port || " >/dev/null 2>&1 & echo $!"
 
-   p := open(cmd, "p") | stop("failed to start udb process: " || args)
-   pid := integer(read(p)) | stop("failed to read pid for udb process: " || args)
+   p := open(cmd, "p") | stop("failed to start udb process: " || mode || " " || port)
+   if is_windows() then
+      winlog("start_udb_process pipe opened for: " || mode || " " || port)
+   pid := integer(read(p)) | stop("failed to read pid for udb process: " || mode || " " || port)
+   if is_windows() then
+      winlog("start_udb_process pid: " || image(pid))
    close(p)
    return pid
 end
@@ -62,7 +79,9 @@ class DAP_TestClient : JSON_HTTPSocket(udb_addr, udb_port, seq, adapter_pid, dap
    end
 
    method start_udb_adapter()
-      adapter_pid := start_udb_process("--adapter " || udb_port)
+      adapter_pid := start_udb_process("--adapter", udb_port)
+      if is_windows() then
+         winlog("start_udb_adapter pid=" || image(adapter_pid) || " port=" || udb_port)
       delay(500)
       return self
    end
@@ -94,19 +113,29 @@ class DAP_TestClient : JSON_HTTPSocket(udb_addr, udb_port, seq, adapter_pid, dap
    method start_client_connection()
       every 1 to 20 do {
          if connect_to_adapter() then
-            return self
+            {
+               if is_windows() then
+                  winlog("start_client_connection connected on port " || udb_port)
+               return self
+            }
+         if is_windows() then
+            winlog("start_client_connection retry on port " || udb_port)
          delay(500)
       }
    end
 
    method start_adapter_and_connect()
       every attempt := 1 to 5 do {
+         if is_windows() then
+            winlog("start_adapter_and_connect attempt " || attempt)
          stop_udb_adapter()
          udb_port := find_port()
          start_udb_adapter()
          if start_client_connection() then
             return self
       }
+      if is_windows() then
+         winlog("start_adapter_and_connect failed after retries")
       stop_udb_adapter()
       stop("failed to connect to udb adapter")
    end
@@ -155,7 +184,7 @@ class DAP_TestClient : JSON_HTTPSocket(udb_addr, udb_port, seq, adapter_pid, dap
                   dap_port := tab(0)
                }
                /dap_port & stop("failed to parse dapproxy port from runInTerminal command " || run_cmd)
-               dapproxy_pid := start_udb_process("--dapproxy " || dap_port)
+               dapproxy_pid := start_udb_process("--dapproxy", dap_port)
                delay(500)
             }
             body := table()
